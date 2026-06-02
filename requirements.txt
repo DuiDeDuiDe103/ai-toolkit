@@ -1,0 +1,2 @@
+# ai-toolkit dependencies
+#尽量使用标准库，减少依赖
