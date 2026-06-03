@@ -492,11 +492,15 @@ def output_summary(result: dict):
     }
 
     for cat, data in result["categories"].items():
-        summary["categories"][cat] = {
+        cat_info = {
             "count": data["count"],
             "size_str": data["size_str"],
             "large_file_count": len(data["large_files"])
         }
+        # 小文件提示
+        if data["count"] > 0 and data["size"] == 0:
+            cat_info["note"] = "文件数据较小，未单独统计大小"
+        summary["categories"][cat] = cat_info
 
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
