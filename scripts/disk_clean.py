@@ -251,18 +251,25 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
 
 
 def get_index_path(drive: str) -> Path:
-    drive_path = Path(drive)
-    index_dir = drive_path / '.ai-toolkit'
-    index_dir.mkdir(exist_ok=True)
-    return index_dir / 'index.json'
+    """获取索引文件路径（保存到用户目录）"""
+    # 使用用户主目录下的 .ai-toolkit 目录
+    home = Path.home()
+    index_dir = home / '.ai-toolkit' / 'indexes'
+    index_dir.mkdir(parents=True, exist_ok=True)
+
+    # 将路径转换为文件名（替换特殊字符）
+    safe_name = drive.replace('\\', '_').replace('/', '_').replace(':', '').replace('.', '_')
+    return index_dir / f'{safe_name}.json'
 
 
 def get_history_path(drive: str) -> Path:
     """获取历史索引路径"""
-    drive_path = Path(drive)
-    index_dir = drive_path / '.ai-toolkit'
-    index_dir.mkdir(exist_ok=True)
-    return index_dir / 'history.json'
+    home = Path.home()
+    history_dir = home / '.ai-toolkit' / 'history'
+    history_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name = drive.replace('\\', '_').replace('/', '_').replace(':', '').replace('.', '_')
+    return history_dir / f'{safe_name}.json'
 
 
 class DiskScanner:
