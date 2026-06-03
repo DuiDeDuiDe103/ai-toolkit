@@ -174,15 +174,6 @@ class DiskScanner:
         self.large_threshold = large_threshold
         self.visited = set()
         self.visited_lock = threading.Lock()
-        self.file_count = 0
-        self.count_lock = threading.Lock()
-
-    def update_progress(self):
-        """更新进度"""
-        with self.count_lock:
-            self.file_count += 1
-            if self.file_count % 10000 == 0:
-                print(f"  [SCAN] {self.file_count:,} files...", file=sys.stderr)
 
     def scan(self, path: str) -> dict:
         drive_path = Path(path)
@@ -231,7 +222,6 @@ class DiskScanner:
                             continue
 
                         local_files += 1
-                        self.update_progress()
                         cat = classify_file(str(item), size, drive)
                         local_cats[cat] += 1
 
@@ -283,7 +273,6 @@ class DiskScanner:
                     local_cats = {c: 0 for c in all_cats}
                     local_cats[cat] = 1
                     local_large = {c: [] for c in all_cats}
-                    self.update_progress()
                     if size >= self.large_threshold:
                         local_large[cat].append({
                             "path": str(item),
