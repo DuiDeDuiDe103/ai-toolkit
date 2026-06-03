@@ -22,9 +22,9 @@ ai-toolkit 是一个轻量级的 AI 工具包，为 agent 提供系统扫描能�
 # 克隆仓库
 git clone <repository-url> ~/ai-toolkit
 
-# 或直接复制脚本文件
+# 或直接复制脚本文件和说明书
 # scripts/disk_clean.py
-# scripts/disk_clean.md
+# docs/disk_clean.md
 ```
 
 ## 使用方式
@@ -146,7 +146,7 @@ python scripts/disk_clean.py --diff -p D:
 ```
 用户："D盘满了"
   ↓
-Agent 读取说明书：scripts/disk_clean.md
+Agent 读取说明书：docs/disk_clean.md
   ↓
 Agent 调用：python scripts/disk_clean.py --summary -p D:
   ↓
