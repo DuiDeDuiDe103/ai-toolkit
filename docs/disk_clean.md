@@ -164,9 +164,15 @@ Agent 给用户建议："前10个大文件占300GB，主要是游戏录像..."
 
 - **只读操作**：脚本不会删除任何文件
 - **首次扫描**：需要 20-30 秒
-- **索引缓存**：扫描结果保存在 `{盘符}:/.ai-toolkit/index.json`
+- **索引缓存**：扫描结果保存在 `~/.ai-toolkit/indexes/` 目录
+- **历史记录**：保存在 `~/.ai-toolkit/history/` 目录（用于对比模式）
 - **索引有效期**：当天有效，过期需要重新扫描
 - **Token 消耗**：summary ~500 tokens，detail ~400 tokens
+
+**索引文件示例：**
+- Windows: `C:\Users\用户名\.ai-toolkit\indexes\D_.json`
+- Linux: `~/.ai-toolkit/indexes/_.json`
+- macOS: `~/.ai-toolkit/indexes/Volumes_xxx.json`
 
 ## 参数说明
 
