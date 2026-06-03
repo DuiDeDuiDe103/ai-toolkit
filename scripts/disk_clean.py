@@ -67,54 +67,100 @@ def get_size_str(size_bytes: int) -> str:
 
 
 def get_drives() -> list:
-    if platform.system() != 'Windows':
+    """获取可用磁盘/挂载点"""
+    if platform.system() == 'Windows':
+        return [f"{l}:\\" for l in 'CDEFGHIJKLMNOPQRSTUVWXYZ' if os.path.exists(f"{l}:\\")]
+    elif platform.system() == 'Darwin':  # macOS
+        volumes = Path('/Volumes')
+        if volumes.exists():
+            return [str(v) for v in volumes.iterdir() if v.is_dir()]
         return ['/']
-    return [f"{l}:\\" for l in 'CDEFGHIJKLMNOPQRSTUVWXYZ' if os.path.exists(f"{l}:\\")]
+    else:  # Linux
+        return ['/']
+
+
+def normalize_path(path_str: str) -> str:
+    """标准化路径，统一使用 /"""
+    return os.path.normpath(path_str).replace('\\', '/')
 
 
 def guess_app_name(path: str) -> str:
-    """根据路径段猜测应用名，避免简单字符串包含导致的误判"""
-    parts = set(path.lower().replace('/', '\\').split('\\'))
+    """根据路径段猜测应用名"""
+    p = normalize_path(path).lower()
+    parts = set(p.split('/'))
 
-    # 路径段精确匹配（高置信度）
+    # 跨平台应用映射
     app_markers = {
-        'steamapps': 'Steam', 'epicgames': 'Epic Games', 'wegame': 'WeGame',
-        'google\\chrome': 'Chrome', 'microsoft\\edge': 'Edge',
-        'mozilla firefox': 'Firefox', 'microsoft vscode': 'VSCode',
-        'microsoft visual studio': 'Visual Studio', 'docker': 'Docker',
-        'nvidia': 'NVIDIA', 'obs-studio': 'OBS', 'minecraft': 'Minecraft',
-        'bitbrowser': 'BitBrowser', 'blender foundation': 'Blender',
-        'python': 'Python', 'node.js': 'Node.js',
-        'league of legends': 'League of Legends', 'valorant': 'VALORANT',
-        'genshin impact': 'Genshin Impact',
+        # 通用
+        'steam': 'Steam', 'steamapps': 'Steam',
+        'epic games': 'Epic Games', 'epicgames': 'Epic Games',
+        'wegame': 'WeGame', 'docker': 'Docker',
+        'nvidia': 'NVIDIA', 'obs-studio': 'OBS',
+        'minecraft': 'Minecraft', 'blender': 'Blender',
+        'python': 'Python', 'node': 'Node.js', 'nodejs': 'Node.js',
+        'visual studio code': 'VSCode', 'vscode': 'VSCode',
+        'visual studio': 'Visual Studio',
+        'google': 'Google', 'chrome': 'Chrome',
+        'mozilla': 'Mozilla', 'firefox': 'Firefox',
+        'spotify': 'Spotify', 'slack': 'Slack', 'discord': 'Discord',
+        # Linux/macOS 特定
+        'libreoffice': 'LibreOffice', 'gimp': 'GIMP',
+        'vlc': 'VLC', 'telegram': 'Telegram',
+        'thunderbird': 'Thunderbird',
     }
 
-    # 逐段匹配，避免 'steaming_hot_pot' 误判为 Steam
+    # 逐段匹配
     for part in parts:
         for marker, name in app_markers.items():
             if part == marker or part.startswith(marker):
                 return name
 
     # 兜底：取第一个有意义的路径段
-    skip = {'Users', 'AppData', 'Local', 'Roaming', 'Temp', 'Cache',
-            'common', 'steamapps', 'workshop', 'content', 'Program Files',
-            'Program Files (x86)', 'ProgramData', 'Downloads', 'Desktop'}
-    for part in path.replace('/', '\\').split('\\'):
+    skip = {'Users', 'user', 'home', 'AppData', 'Local', 'Roaming',
+            'Temp', 'Cache', 'common', 'steamapps', 'workshop', 'content',
+            'Program Files', 'Program Files (x86)', 'ProgramData',
+            'Downloads', 'Desktop', 'Documents', '.config', '.local',
+            'opt', 'usr', 'var', 'tmp'}
+    for part in p.split('/'):
         if part and part not in skip and len(part) > 2 and not part.startswith(('.', '$')):
             return part
     return 'Unknown'
 
 
+def get_system_prefixes(drive: str) -> list:
+    """获取系统路径前缀（跨平台）"""
+    d = drive.lower().rstrip('/')
+    system = platform.system()
+
+    if system == 'Windows':
+        return [
+            f'{d}/windows', f'{d}/program files',
+            f'{d}/program files (x86)', f'{d}/programdata',
+            f'{d}/recovery',
+        ]
+    elif system == 'Darwin':  # macOS
+        return [
+            '/system', '/library', '/usr', '/bin', '/sbin',
+            '/private', '/cores',
+        ]
+    else:  # Linux
+        return [
+            '/usr', '/bin', '/sbin', '/lib', '/lib64',
+            '/etc', '/boot', '/dev', '/proc', '/sys',
+            '/var/lib', '/var/cache',
+        ]
+
+
 def classify_file(path_str: str, size: int, drive: str) -> str:
     """
-    分类文件，大文件按类型细分
+    分类文件，大文件按类型细分（跨平台）
 
     返回类别：
     - system: 系统文件
     - cache: 缓存文件
     - temp: 临时文件
     - log: 日志文件
-    - installer: 安装包（需多条件识别）
+    - installer: 安装包
     - archive: 压缩包
     - large_video: 大视频文件
     - large_game: 大游戏数据
@@ -124,15 +170,13 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
     - large_other: 其他大文件
     - other: 其他文件
     """
-    p = path_str.lower().replace('/', '\\')
+    p = normalize_path(path_str).lower()
     suffix = Path(path_str).suffix.lower()
     parent = Path(path_str).parent.name.lower()
     stem = Path(path_str).stem.lower()
-    d = drive.lower()
 
-    # 系统文件
-    sys_prefixes = [f'{d}:\\windows', f'{d}:\\program files', f'{d}:\\programdata',
-                    f'{d}:\\recovery', '/windows', '/usr', '/bin', '/lib', '/etc']
+    # 系统文件（跨平台）
+    sys_prefixes = get_system_prefixes(drive)
     if any(p.startswith(s) for s in sys_prefixes):
         return 'system'
 
@@ -148,25 +192,29 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
     if suffix in {'.log', '.log.1', '.log.2', '.log.3'}:
         return 'log'
 
-    # 安装包识别（多条件）
+    # 安装包识别（多条件，跨平台）
     installer_keywords = {'setup', 'install', 'uninstall', 'update', 'upgrade',
                          'patch', 'downloader', 'bootstrapper', 'wizard', 'deploy'}
-    # .msi/.msix/.appx 几乎都是安装包，直接归类
+
+    # Windows 安装包
     if suffix in {'.msi', '.msix', '.appx'}:
         return 'installer'
-    # .exe 需要文件名关键词判断
     if suffix == '.exe':
         if any(kw in stem for kw in installer_keywords):
             return 'installer'
-        # 在常见下载目录 + 较大文件 → 大概率是安装包
-        if any(d in p for d in ['\\downloads', '\\desktop']) and size > 10 * 1024 * 1024:
+        if any(d in p for d in ['/downloads', '/desktop']) and size > 10 * 1024 * 1024:
             return 'installer'
-    # .deb/.rpm 是 Linux 包管理格式，归为安装包
-    if suffix in {'.deb', '.rpm'}:
+
+    # Linux 包管理
+    if suffix in {'.deb', '.rpm', '.pkg', '.appimage', '.snap', '.flatpak'}:
+        return 'installer'
+
+    # macOS 安装包
+    if suffix in {'.dmg', '.pkg'}:
         return 'installer'
 
     # 压缩包
-    if suffix in {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}:
+    if suffix in {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.zst'}:
         return 'archive'
 
     # 大文件细分（≥100MB）
@@ -175,9 +223,8 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
         if suffix in {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}:
             return 'large_video'
 
-        # 游戏数据（仅保留游戏专用后缀，去掉 .bin/.dat/.idx/.pkg 等泛用后缀）
+        # 游戏数据
         game_suffixes = {'.pak', '.vpk', '.cpk', '.bdt', '.bhd', '.bhf', '.arc'}
-        # 在游戏目录下，.bin/.dat/.idx 也算游戏数据
         game_dirs = ['steam', 'epic', 'wegame', 'origin', 'ubisoft', 'blizzard',
                      'games', 'steamapps', 'common']
         if suffix in game_suffixes:
@@ -226,12 +273,23 @@ class DiskScanner:
 
     def scan(self, path: str) -> dict:
         drive_path = Path(path)
-        drive = drive_path.drive[0] if drive_path.drive else ''
+        # 跨平台获取 drive 标识
+        if platform.system() == 'Windows':
+            drive = drive_path.drive[0] if drive_path.drive else ''
+        else:
+            drive = '/'  # Linux/macOS 根目录
 
-        skip_dirs = {'$Recycle.Bin', '$WINDOWS', 'System Volume Information',
-                     'Windows', 'Program Files', 'Program Files (x86)',
-                     'ProgramData', 'Recovery', 'Boot', '.git', '.svn',
-                     'node_modules', '__pycache__', '$WinREAgent'}
+        # 跨平台跳过的目录
+        skip_dirs = {
+            # Windows
+            '$Recycle.Bin', '$WINDOWS', 'System Volume Information',
+            'Windows', 'Program Files', 'Program Files (x86)',
+            'ProgramData', 'Recovery', 'Boot',
+            # Linux/macOS
+            'proc', 'sys', 'dev', 'snap',
+            # 通用
+            '.git', '.svn', 'node_modules', '__pycache__', '$WinREAgent'
+        }
 
         def worker(dir_path: Path, depth: int):
             local_files = 0
@@ -523,12 +581,20 @@ def main():
 
     if args.path:
         p = args.path.rstrip('\\').rstrip('/')
-        if len(p) == 2 and p[1] == ':':
+        # Windows 盘符处理
+        if platform.system() == 'Windows' and len(p) == 2 and p[1] == ':':
             p += '\\'
+        # Linux/macOS 根目录
+        elif p == '':
+            p = '/'
         drive = p
     else:
-        print("Error: --path is required", file=sys.stderr)
-        sys.exit(1)
+        # 默认扫描根目录
+        if platform.system() == 'Windows':
+            print("Error: --path is required (e.g. -p C:)", file=sys.stderr)
+        else:
+            drive = '/'
+            print(f"[INFO] No path specified, scanning {drive}", file=sys.stderr)
 
     # 摘要、详情或对比模式
     if args.summary or args.detail or args.diff:
