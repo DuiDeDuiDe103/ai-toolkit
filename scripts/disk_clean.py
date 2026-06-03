@@ -36,6 +36,27 @@ if platform.system() == 'Windows':
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
 
+# 按文件类型的大文件阈值（字节）
+# 视频素材 1GB 很正常，日志 100MB 就可疑
+TYPE_LARGE_THRESHOLDS = {
+    'large_video': 1024 * 1024 * 1024,    # 视频：1GB
+    'large_game': 512 * 1024 * 1024,      # 游戏数据：512MB
+    'large_vm': 512 * 1024 * 1024,        # 虚拟机：512MB
+    'large_model': 512 * 1024 * 1024,     # 模型/设计：512MB
+    'large_image': 1024 * 1024 * 1024,    # 镜像：1GB
+    'large_other': 512 * 1024 * 1024,     # 其他大文件：512MB
+    'installer': 50 * 1024 * 1024,        # 安装包：50MB
+    'archive': 100 * 1024 * 1024,         # 压缩包：100MB
+    'log': 10 * 1024 * 1024,              # 日志：10MB
+    'temp': 10 * 1024 * 1024,             # 临时文件：10MB
+}
+DEFAULT_LARGE_THRESHOLD = 100 * 1024 * 1024  # 默认：100MB
+
+
+def get_large_threshold(cat: str) -> int:
+    """获取某类别的大文件阈值"""
+    return TYPE_LARGE_THRESHOLDS.get(cat, DEFAULT_LARGE_THRESHOLD)
+
 
 def get_size_str(size_bytes: int) -> str:
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -52,25 +73,33 @@ def get_drives() -> list:
 
 
 def guess_app_name(path: str) -> str:
-    p = path.lower()
-    apps = {
-        'steam': 'Steam', 'epic': 'Epic Games', 'wegame': 'WeGame',
-        'chrome': 'Chrome', 'edge': 'Edge', 'firefox': 'Firefox',
-        'vscode': 'VSCode', 'visual studio': 'Visual Studio',
-        'docker': 'Docker', 'nvidia': 'NVIDIA', 'obs': 'OBS',
-        'minecraft': 'Minecraft', 'bitbrowser': 'BitBrowser',
-        'blender': 'Blender', 'python': 'Python', 'node': 'Node.js',
-        'league': 'League of Legends', 'valorant': 'VALORANT',
-        'genshin': 'Genshin Impact', 'sg_elite': 'Snowbreak',
+    """根据路径段猜测应用名，避免简单字符串包含导致的误判"""
+    parts = set(path.lower().replace('/', '\\').split('\\'))
+
+    # 路径段精确匹配（高置信度）
+    app_markers = {
+        'steamapps': 'Steam', 'epicgames': 'Epic Games', 'wegame': 'WeGame',
+        'google\\chrome': 'Chrome', 'microsoft\\edge': 'Edge',
+        'mozilla firefox': 'Firefox', 'microsoft vscode': 'VSCode',
+        'microsoft visual studio': 'Visual Studio', 'docker': 'Docker',
+        'nvidia': 'NVIDIA', 'obs-studio': 'OBS', 'minecraft': 'Minecraft',
+        'bitbrowser': 'BitBrowser', 'blender foundation': 'Blender',
+        'python': 'Python', 'node.js': 'Node.js',
+        'league of legends': 'League of Legends', 'valorant': 'VALORANT',
+        'genshin impact': 'Genshin Impact',
     }
-    for k, v in apps.items():
-        if k in p:
-            return v
-    parts = path.replace('/', '\\').split('\\')
+
+    # 逐段匹配，避免 'steaming_hot_pot' 误判为 Steam
+    for part in parts:
+        for marker, name in app_markers.items():
+            if part == marker or part.startswith(marker):
+                return name
+
+    # 兜底：取第一个有意义的路径段
     skip = {'Users', 'AppData', 'Local', 'Roaming', 'Temp', 'Cache',
             'common', 'steamapps', 'workshop', 'content', 'Program Files',
-            'Program Files (x86)', 'ProgramData'}
-    for part in parts:
+            'Program Files (x86)', 'ProgramData', 'Downloads', 'Desktop'}
+    for part in path.replace('/', '\\').split('\\'):
         if part and part not in skip and len(part) > 2 and not part.startswith(('.', '$')):
             return part
     return 'Unknown'
@@ -85,7 +114,7 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
     - cache: 缓存文件
     - temp: 临时文件
     - log: 日志文件
-    - installer: 安装包
+    - installer: 安装包（需多条件识别）
     - archive: 压缩包
     - large_video: 大视频文件
     - large_game: 大游戏数据
@@ -98,6 +127,7 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
     p = path_str.lower().replace('/', '\\')
     suffix = Path(path_str).suffix.lower()
     parent = Path(path_str).parent.name.lower()
+    stem = Path(path_str).stem.lower()
     d = drive.lower()
 
     # 系统文件
@@ -118,22 +148,41 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
     if suffix in {'.log', '.log.1', '.log.2', '.log.3'}:
         return 'log'
 
-    # 安装包
-    if suffix in {'.exe', '.msi', '.msix', '.appx', '.dmg', '.pkg', '.deb', '.rpm'}:
+    # 安装包识别（多条件）
+    installer_keywords = {'setup', 'install', 'uninstall', 'update', 'upgrade',
+                         'patch', 'downloader', 'bootstrapper', 'wizard', 'deploy'}
+    # .msi/.msix/.appx 几乎都是安装包，直接归类
+    if suffix in {'.msi', '.msix', '.appx'}:
+        return 'installer'
+    # .exe 需要文件名关键词判断
+    if suffix == '.exe':
+        if any(kw in stem for kw in installer_keywords):
+            return 'installer'
+        # 在常见下载目录 + 较大文件 → 大概率是安装包
+        if any(d in p for d in ['\\downloads', '\\desktop']) and size > 10 * 1024 * 1024:
+            return 'installer'
+    # .deb/.rpm 是 Linux 包管理格式，归为安装包
+    if suffix in {'.deb', '.rpm'}:
         return 'installer'
 
     # 压缩包
     if suffix in {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}:
         return 'archive'
 
-    # 大文件细分
+    # 大文件细分（≥100MB）
     if size >= 100 * 1024 * 1024:
         # 视频文件
         if suffix in {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}:
             return 'large_video'
 
-        # 游戏数据
-        if suffix in {'.bin', '.pak', '.vpk', '.cpk', '.bdt', '.bhd', '.bhf', '.dat', '.arc', '.idx', '.pkg'}:
+        # 游戏数据（仅保留游戏专用后缀，去掉 .bin/.dat/.idx/.pkg 等泛用后缀）
+        game_suffixes = {'.pak', '.vpk', '.cpk', '.bdt', '.bhd', '.bhf', '.arc'}
+        # 在游戏目录下，.bin/.dat/.idx 也算游戏数据
+        game_dirs = ['steam', 'epic', 'wegame', 'origin', 'ubisoft', 'blizzard',
+                     'games', 'steamapps', 'common']
+        if suffix in game_suffixes:
+            return 'large_game'
+        if suffix in {'.bin', '.dat', '.idx'} and any(d in p for d in game_dirs):
             return 'large_game'
 
         # 虚拟机文件
@@ -225,7 +274,7 @@ class DiskScanner:
                         cat = classify_file(str(item), size, drive)
                         local_cats[cat] += 1
 
-                        if size >= self.large_threshold:
+                        if size >= get_large_threshold(cat):
                             local_large[cat].append({
                                 "path": str(item),
                                 "name": name,
@@ -273,7 +322,7 @@ class DiskScanner:
                     local_cats = {c: 0 for c in all_cats}
                     local_cats[cat] = 1
                     local_large = {c: [] for c in all_cats}
-                    if size >= self.large_threshold:
+                    if size >= get_large_threshold(cat):
                         local_large[cat].append({
                             "path": str(item),
                             "name": item.name,
@@ -336,14 +385,19 @@ def load_index(index_path: Path) -> dict:
 
 def save_history(result: dict, history_path: Path):
     """保存历史索引（用于对比）"""
-    # 读取旧历史
     history = []
     if history_path.exists():
         try:
             with open(history_path, 'r', encoding='utf-8') as f:
                 history = json.load(f)
-        except:
-            history = []
+        except json.JSONDecodeError as e:
+            print(f"[WARN] history.json 格式损坏: {e}", file=sys.stderr)
+            backup_path = history_path.with_suffix('.json.bak')
+            history_path.rename(backup_path)
+            print(f"[INFO] 已备份损坏文件到: {backup_path}", file=sys.stderr)
+        except (IOError, OSError) as e:
+            print(f"[WARN] 读取 history.json 失败: {e}", file=sys.stderr)
+            raise
 
     # 添加新记录
     history.append({
