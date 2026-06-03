@@ -16,6 +16,15 @@ ai-toolkit 是一个轻量级的 AI 工具包，为 agent 提供系统扫描能�
 - **零依赖**：只用 Python 标准库
 - **可移植**：任何 agent 都能调用
 
+## 环境要求
+
+| 依赖 | 版本 | 说明 |
+|------|------|------|
+| Python | 3.8+ | 唯一依赖，跨平台 |
+| 操作系统 | - | Windows/Linux/macOS |
+
+**无需安装任何第三方库**，只使用 Python 标准库。
+
 ## 安装
 
 ```bash
@@ -25,6 +34,13 @@ git clone <repository-url> ~/ai-toolkit
 # 或直接复制脚本文件和说明书
 # scripts/disk_clean.py
 # docs/disk_clean.md
+```
+
+**验证安装：**
+
+```bash
+python --version  # 确认 Python 3.8+
+python scripts/disk_clean.py --help  # 查看帮助
 ```
 
 ## 使用方式
