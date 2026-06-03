@@ -8,7 +8,6 @@
 - 现有工具要么绑定特定平台，要么不够轻量
 
 ### 1.2 目标
-
 做一个通用的 AI 工具包，让 agent 少问多答，省 token。
 
 ### 1.3 核心逻辑
@@ -29,25 +28,13 @@
 | **Python** | 跨平台、生态丰富、文本处理强 | 需要 Python 环境 | ✅ 采用 |
 | **Node.js** | 跨平台、MCP 生态支持 | 需要 Node 环境、AI 领域不通用 | ❌ 放弃 |
 
-**选择 Python 的理由：**
-1. 跨平台：Windows/Linux/macOS 一套代码
-2. 生态丰富：文本处理、网络请求、系统操作都有库
-3. AI 领域通用：大多数开发者机器上都有 Python
-4. 扩展性好：后续加 MCP Server 包装方便
-
 ### 2.2 输出格式选择
 
 | 方案 | 格式 | 优点 | 缺点 | 结论 |
 |------|------|------|------|------|
-| **方案 A** | 纯文本 `KEY\|VALUE\|DETAILS` | 最省 token、通用 | 需要 agent 解析 | ❌ 放弃 |
+| **方案 A** | 纯文本 `KEY|VALUE|DETAILS` | 最省 token、通用 | 需要 agent 解析 | ❌ 放弃 |
 | **方案 B** | JSON 结构化 | 易解析、结构清晰 | 比纯文本多占 token | ✅ 采用 |
 | **方案 C** | 两种都支持 | 灵活 | 增加复杂度 | ❌ 放弃 |
-
-**选择方案 B 的理由：**
-1. 工具输出的主要对象是 agent
-2. JSON 是 agent 最易解析的格式
-3. 结构化数据利于 agent 理解和建议
-4. 虽然比纯文本多占 token，但 agent 处理效率更高
 
 ### 2.3 架构选择
 
@@ -58,23 +45,13 @@
 | **C** | 独立脚本 | 最通用、零依赖 | 需要手动调用 | ✅ 采用 |
 | **B+C** | 脚本 + MCP 包装 | 兼顾通用和集成 | 增加复杂度 | ✅ 采用 |
 
-**选择 B+C 的理由：**
+### 2.4 多线程策略
 
-1. 核心是独立脚本，任何 agent 都能调用
-2. 后续可选加 MCP Server 包装，方便集成
-3. 脚本复用，不浪费开发 effort
-
-### 2.4 懒加载机制
-
-| 场景 | 需要懒加载 | 说明 |
-|------|------------|------|
-| 独立脚本调用 | ❌ 不需要 | 每次只运行一个脚本，天然隔离 |
-| 统一入口调用 | ✅ 需要 | 避免启动时加载所有工具模块 |
-
-**当前选择：独立脚本调用**
-- 每个脚本独立，直接调用
-- 不需要额外的懒加载机制
-- 天然的"按需加载"
+| 策略 | 说明 | 结论 |
+|------|------|------|
+| **全局锁** | 一把大锁保护所有共享资源 | ❌ 性能差 |
+| **visited 锁** | 用 set 记录已访问文件夹，锁保护 set | ✅ 采用 |
+| **线程本地计数** | 每个线程维护本地计数，最后合并 | ✅ 采用 |
 
 ---
 
@@ -86,16 +63,9 @@
 ai-toolkit/
 ├── scripts/                    # 核心脚本
 │   ├── __init__.py
-│   ├── system_info.py          # 系统信息
-│   ├── disk_clean.py           # 灵盘清理
-│   ├── de_ai.py                # 去 AI 味
-│   ├── port_check.py           # 端口占用
-│   ├── wifi_check.py           # 网络诊断
-│   └── text_polish.py          # 文章润色
+│   └── disk_clean.py           # 磁盘扫描
 │
 ├── mcp-server/                 # 可选：MCP Server 包装
-│   ├── index.js
-│   └── package.json
 │
 ├── requirements.txt            # 依赖（尽量少）
 ├── README.md                   # 使用说明
@@ -110,140 +80,200 @@ ai-toolkit/
 | 语言 | Python 3.8+ |
 | 依赖 | 尽量零依赖，必要时用标准库 |
 | 输出 | JSON 格式，结构化 |
-| 行为 | 只读，不修改系统 |
-| 体积 | 单脚本 < 150 行 |
-| 错误处理 | 找不到的跳过，不报错 |
+| 行为 | 只读，不修改文件 |
 | 跨平台 | Windows/Linux/macOS |
 
 ### 3.3 输出格式标准
+
+#### 摘要模式（--summary）
 
 ```json
 {
   "tool": "disk-clean",
   "status": "success",
-  "data": [
-    {
-      "category": "DISK",
-      "type": "C:",
-      "value": "239.28GB",
-      "details": "137.37GB free"
-    },
-    {
-      "category": "CACHE",
-      "type": "Chrome",
-      "value": "1197.33MB",
-      "details": ""
-    }
-  ],
-  "summary": "C盘使用率 42%，Chrome 缓存占 1.2GB"
+  "mode": "summary",
+  "drive": "D:\\",
+  "total_files": 150874,
+  "total_size_str": "509.51GB",
+  "categories": {
+    "cache": {"count": 597, "size_str": "0.00B", "large_file_count": 0},
+    "temp": {"count": 622, "size_str": "0.00B", "large_file_count": 0},
+    "large": {"count": 617, "size_str": "499.62GB", "large_file_count": 617}
+  }
 }
 ```
 
-**字段说明：**
+**Token 消耗：~500**
 
-| 字段 | 必须 | 说明 |
-|------|------|------|
-| tool | ✅ | 工具名 |
-| status | ✅ | success / error |
-| data | ✅ | 结果数组 |
-| data[].category | ✅ | 分类（如 DISK、CACHE、PROCESS） |
-| data[].type | ✅ | 类型（如 C:、Chrome、node.exe） |
-| data[].value | ✅ | 值（如 239.28GB、1197.33MB） |
-| data[].details | ⚪ | 详细信息（可选） |
-| summary | ✅ | 一句话总结，给 agent 直接用 |
+#### 详情模式（--detail large --top 10）
 
-### 3.4 工具清单
-
-| 优先级 | 工具 | 用途 | 典型场景 |
-|--------|------|------|----------|
-| **P0** | system-info | 系统信息 | "电脑什么配置" |
-| **P0** | disk-clean | 磁盘清理 | "C盘满了" |
-| **P0** | de-ai | 去 AI 味 | "文章 AI 味太重" |
-| **P1** | port-check | 端口占用 | "端口被谁占了" |
-| **P1** | wifi-check | 网络诊断 | "网络有问题" |
-| **P1** | text-polish | 文章润色 | "帮我润色作业" |
-
-### 3.5 调用方式
-
-```bash
-# 直接调用
-python scripts/system_info.py
-python scripts/disk_clean.py --path C:\
-python scripts/de_ai.py --text "AI 生成的文本"
-
-# 作为模块调用
-python -m scripts.system_info
+```json
+{
+  "tool": "disk-clean",
+  "status": "success",
+  "mode": "detail",
+  "drive": "D:\\",
+  "category": "large",
+  "total_count": 617,
+  "total_size_str": "499.62GB",
+  "showing": 10,
+  "files": [
+    {
+      "name": "The Binding of Isaac Rebirth 2025.11.29 - 19.35.38.01.mp4",
+      "app": "The Binding of Isaac Rebirth",
+      "size": 81579148282,
+      "size_str": "75.98GB",
+      "suffix": ".mp4",
+      "mtime": "2025-11-29 21:32"
+    }
+  ]
+}
 ```
 
-### 3.6 可移植性设计
+**Token 消耗：~400（使用 --short-path）**
 
-| 设计 | 实现方式 |
-|------|----------|
-| 路径无关 | 用 `os.path.expanduser("~")`、`os.environ` 等 |
-| 系统检测 | `platform` 模块判断 OS |
-| 依赖最小化 | 优先用标准库，必要时用轻量第三方库 |
-| 编码兼容 | 统一 UTF-8 |
+### 3.4 文件分类
+
+| 类别 | 说明 | 可优化性 |
+|------|------|----------|
+| system | 系统文件 | 🔴 不可删 |
+| cache | 缓存文件 | 🟢 可删，应用会自动重建 |
+| temp | 临时文件 | 🟢 可删，不影响功能 |
+| log | 日志文件 | 🟢 可删，不影响功能 |
+| installer | 安装包 | 🟡 需确认后删 |
+| archive | 压缩包 | 🟡 需确认后删 |
+| large | 大文件（>100MB） | 🟡 需确认后删 |
+| other | 其他用户文件 | 🟡 需确认后删 |
+
+### 3.5 多线程扫描策略
+
+```
+visited = set()  # 记录已访问的文件夹
+visited_lock = threading.Lock()
+
+def scan_dir(path):
+    # 检查是否已访问
+    with visited_lock:
+        if path in visited:
+            return  # 已访问，跳过
+        visited.add(path)
+
+    # 处理文件夹（不加锁，线程独立）
+    local_count = 0
+    for item in path.iterdir():
+        if item.is_file():
+            local_count += 1
+
+    # 返回本地结果，最后合并
+    return local_count
+```
+
+**关键点：**
+1. `visited` 用一把锁保护（竞争不大，简单可靠）
+2. 计数器用线程本地变量，不加锁
+3. 大文件列表线程本地收集，最后合并
 
 ---
 
-## 四、开发计划
+## 四、分层输出设计
 
-### 4.1 分阶段实施
+### 4.1 设计思路
 
-| 阶段 | 内容 | 产出 |
+**核心问题：**
+- 完整输出 ~60,000 tokens，太浪费
+- agent 需要的是摘要，不是完整列表
+
+**解决方案：分层输出**
+- 第一次调用：摘要（~500 tokens）
+- 第二次调用：按需详情（~400 tokens/次）
+- 总计 ~1,300 tokens，节省 98%
+
+### 4.2 使用方式
+
+```bash
+# 第一次：扫描并保存索引（25秒）
+python scripts/disk_clean.py -p D:
+
+# 查看摘要（瞬间）
+python scripts/disk_clean.py --summary -p D:
+
+# 查看详情（瞬间）
+python scripts/disk_clean.py --detail large --top 10 -p D:
+python scripts/disk_clean.py --detail installer --top 5 -p D:
+
+# 短路径模式（省 token）
+python scripts/disk_clean.py --detail large --top 10 --short-path -p D:
+```
+
+### 4.3 索引文件
+
+- 位置：`{盘符}:/.ai-toolkit/index.json`
+- 有效期：当天有效，过期重新扫描
+- 用途：第二次调用读取，不重新扫描
+
+---
+
+## 五、Token 优化
+
+### 5.1 优化措施
+
+| 优化 | 效果 |
+|------|------|
+| 分层输出 | 60,000 → 1,300 tokens（节省 98%） |
+| 去掉 mtime 字段 | 单文件节省 ~20% |
+| --short-path 选项 | 单文件节省 ~50% |
+| **总计** | **180 → 90 tokens/文件** |
+
+### 5.2 Token 消耗对比
+
+| 模式 | Token |
+|------|-------|
+| 完整输出（之前） | ~60,000 |
+| summary（现在） | ~500 |
+| detail --short-path（现在） | ~400 |
+| **总计** | **~1,300** |
+| **节省** | **98%** |
+
+---
+
+## 六、开发计划
+
+### 6.1 已完成
+
+| 功能 | 状态 | 说明 |
 |------|------|------|
-| **Phase 1** | 搭建骨架 + P0 工具 | 可用版本 |
-| **Phase 2** | P1 工具 + 测试 | 完整版本 |
-| **Phase 3** | MCP Server 包装 | 可选扩展 |
+| 项目骨架 | ✅ | 目录结构、README、CHANGELOG |
+| 磁盘扫描 | ✅ | 多线程扫描，visited 防重复 |
+| 文件分类 | ✅ | system/cache/temp/log/installer/archive/large/other |
+| 分层输出 | ✅ | summary + detail |
+| 索引保存 | ✅ | 扫描结果保存到本地 |
+| Token 优化 | ✅ | 去掉 mtime，--short-path |
 
-### 4.2 Phase 1 详细任务
+### 6.2 待实现
 
-1. 搭建项目目录结构
-2. 实现 system_info.py
-3. 实现 disk_clean.py
-4. 实现 de_ai.py
-5. 编写 README.md
-
----
-
-## 五、预期效果
-
-### 5.1 省 Token 效果
-
-| 场景 | 无工具 | 有工具 | 节省 |
-|------|--------|--------|------|
-| "C盘满了" | AI 反复询问 + 分析（3-5轮） | 调用 disk_clean + AI 建议（1轮） | 60-80% |
-| "文章 AI 味重" | AI 询问具体问题 + 修改建议（2-3轮） | 调用 de_ai + 直接输出（1轮） | 50-70% |
-| "电脑什么配置" | AI 询问系统类型 + 多次查询（2-4轮） | 调用 system_info + 直接返回（1轮） | 60-80% |
-
-### 5.2 用户体验提升
-
-- **减少往返**：一次调用获取完整信息
-- **即时反馈**：工具直接返回结构化数据
-- **降低门槛**：用户不需要懂技术，agent 自动调用
-
-### 5.3 可扩展性
-
-- **新工具**：按规范添加新脚本即可
-- **新平台**：后续可加 MCP Server 包装
-- **跨平台**：Python 一套代码，Windows/Linux/macOS 通用
+| 功能 | 优先级 | 说明 |
+|------|--------|------|
+| 评分系统 | P1 | 时间+类型+大小加权 |
+| 分组排序 | P1 | 按类别分组，组内按分数排序 |
+| 访问时间 | P2 | 用 atime 判断"用户以为删除了" |
+| 遇到特定文件夹直接标记 | P2 | 不递归，直接加入类别 |
+| MCP Server 包装 | P3 | 可选扩展 |
 
 ---
 
-## 六、风险与对策
+## 七、风险与对策
 
 | 风险 | 影响 | 对策 |
 |------|------|------|
-| 用户没 Python 环境 | 无法使用 | README 说明安装方式，或提供打包版本 |
-| 脚本执行权限问题 | Windows 可能限制 | README 说明如何设置 |
-| 依赖库安装失败 | 功能受限 | 优先用标准库，减少依赖 |
-| 输出格式不被 agent 识别 | 无法解析 | 遵循 JSON 标准，保持格式一致 |
+| 用户没 Python 环境 | 无法使用 | README 说明安装方式 |
+| 扫描大磁盘耗时长 | 用户等待 | 多线程优化，索引缓存 |
+| 索引过期 | 数据不准确 | 提示用户重新扫描 |
 
 ---
 
-## 七、总结
+## 八、总结
 
-### 7.1 技术选型
+### 8.1 技术选型
 
 | 维度 | 选择 |
 |------|------|
@@ -251,18 +281,27 @@ python -m scripts.system_info
 | 输出 | JSON 结构化 |
 | 架构 | 独立脚本 + 可选 MCP 包装 |
 | 平台 | 跨平台（Windows/Linux/macOS） |
-| 依赖 | 尽量零依赖 |
+| 依赖 | 零依赖 |
 
-### 7.2 核心价值
+### 8.2 核心价值
 
-1. **省 Token**：工具收集信息，AI 只负责建议
+1. **省 Token**：分层输出，节省 98%
 2. **通用性**：任何 agent 都能调用
 3. **可扩展**：按需添加新工具
 4. **轻量级**：零依赖、跨平台
 
-### 7.3 下一步
+### 8.3 使用示例
 
-确认本方案后，开始 Phase 1 开发：
-1. 搭建项目骨架
-2. 实现 P0 工具（system_info、disk_clean、de_ai）
-3. 编写使用文档
+```bash
+# 用户：D盘能清理多少？
+# Agent 调用：python scripts/disk_clean.py --summary -p D:
+# Agent 看到：large 617个文件，499GB
+# Agent 调用：python scripts/disk_clean.py --detail large --top 10 --short-path -p D:
+# Agent 给用户建议："前10个大文件占300GB，主要是游戏录像..."
+```
+
+### 8.4 Token 消耗
+
+- 完整输出：~60,000 tokens
+- 分层输出：~1,300 tokens
+- **节省 98%**
