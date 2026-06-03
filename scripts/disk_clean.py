@@ -183,8 +183,7 @@ class DiskScanner:
                                 "size": size,
                                 "size_str": get_size_str(size),
                                 "suffix": item.suffix,
-                                "mtime": mtime,
-                                "mtime_str": time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)),
+                                "mtime": time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)),
                             })
                 except (PermissionError, OSError):
                     continue
@@ -230,8 +229,7 @@ class DiskScanner:
                             "size": size,
                             "size_str": get_size_str(size),
                             "suffix": item.suffix,
-                            "mtime": mtime,
-                            "mtime_str": time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)),
+                            "mtime": time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)),
                         })
                     return {"files": 1, "cats": local_cats, "large": local_large}
                 except (PermissionError, OSError):
@@ -311,7 +309,7 @@ def output_summary(result: dict):
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
-def output_detail(result: dict, category: str, top: int = 10):
+def output_detail(result: dict, category: str, top: int = 10, short_path: bool = False):
     """输出详情"""
     if category not in result["categories"]:
         print(json.dumps({"error": f"Category '{category}' not found"}, ensure_ascii=False))
@@ -319,6 +317,10 @@ def output_detail(result: dict, category: str, top: int = 10):
 
     cat_data = result["categories"][category]
     files = cat_data["large_files"][:top]
+
+    # 如果启用短路径，只保留文件名
+    if short_path:
+        files = [{k: v for k, v in f.items() if k != 'path'} for f in files]
 
     output = {
         "tool": "disk-clean",
@@ -343,6 +345,7 @@ def main():
     parser.add_argument('--summary', action='store_true', help='输出摘要')
     parser.add_argument('--detail', type=str, help='输出详情，指定类别')
     parser.add_argument('--top', type=int, default=10, help='详情数量')
+    parser.add_argument('--short-path', action='store_true', help='只输出文件名，不输出完整路径')
     args = parser.parse_args()
 
     # 确定路径
@@ -368,7 +371,7 @@ def main():
         if args.summary:
             output_summary(result)
         elif args.detail:
-            output_detail(result, args.detail, args.top)
+            output_detail(result, args.detail, args.top, args.short_path)
         return
 
     # 扫描模式
