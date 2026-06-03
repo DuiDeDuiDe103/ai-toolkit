@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-disk_clean.py - 磁盘扫描工具（只读，高性能）
+disk_clean.py - 磁盘扫描工具（只读，高性能，分层输出）
 
 特性：
 - 多线程扫描，visited 锁防重复
-- 线程本地计数，最后合并
+- 分层输出：摘要 + 详情
+- 按类别分组，组内按分数排序
 - 支持指定盘符或子目录
-- 输出 JSON 给 agent 解析
 
 使用：
-    python disk_clean.py -p C:
+    # 第一次：扫描并保存索引
     python disk_clean.py -p D:
-    python disk_clean.py -p D:/Game
-    python disk_clean.py
+
+    # 查看摘要
+    python disk_clean.py --summary -p D:
+
+    # 查看详情
+    python disk_clean.py --detail large -p D: --top 10
 """
 
 import os
@@ -108,16 +112,22 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
     return 'other'
 
 
-# 扫描器类，封装线程安全逻辑
+def get_index_path(drive: str) -> Path:
+    """获取索引文件路径"""
+    drive_path = Path(drive)
+    index_dir = drive_path / '.ai-toolkit'
+    index_dir.mkdir(exist_ok=True)
+    return index_dir / 'index.json'
+
+
+# 扫描器类
 class DiskScanner:
     def __init__(self, large_threshold: int):
         self.large_threshold = large_threshold
         self.visited = set()
         self.visited_lock = threading.Lock()
-        self.lock_count = 0  # 统计锁竞争次数
 
     def scan(self, path: str) -> dict:
-        """扫描指定路径"""
         drive_path = Path(path)
         drive = drive_path.drive[0] if drive_path.drive else ''
 
@@ -127,16 +137,14 @@ class DiskScanner:
                      'node_modules', '__pycache__', '$WinREAgent'}
 
         def worker(dir_path: Path, depth: int):
-            """线程工作函数，返回本地计数"""
             local_files = 0
             local_cats = {c: 0 for c in ['system', 'cache', 'temp', 'log', 'installer', 'archive', 'large', 'other']}
             local_large = {c: [] for c in local_cats}
 
-            # 检查是否已访问
             dir_str = str(dir_path)
             with self.visited_lock:
                 if dir_str in self.visited:
-                    return None  # 已访问，跳过
+                    return None
                 self.visited.add(dir_path)
 
             if depth > 8:
@@ -159,6 +167,7 @@ class DiskScanner:
                     elif item.is_file():
                         try:
                             size = item.stat().st_size
+                            mtime = item.stat().st_mtime
                         except (PermissionError, OSError):
                             continue
 
@@ -174,11 +183,12 @@ class DiskScanner:
                                 "size": size,
                                 "size_str": get_size_str(size),
                                 "suffix": item.suffix,
+                                "mtime": mtime,
+                                "mtime_str": time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)),
                             })
                 except (PermissionError, OSError):
                     continue
 
-            # 递归处理子文件夹
             for sub in sub_dirs:
                 result = worker(sub, depth + 1)
                 if result:
@@ -189,7 +199,6 @@ class DiskScanner:
 
             return {"files": local_files, "cats": local_cats, "large": local_large}
 
-        # 使用线程池扫描顶层目录
         all_cats = {c: 0 for c in ['system', 'cache', 'temp', 'log', 'installer', 'archive', 'large', 'other']}
         all_large = {c: [] for c in all_cats}
         total_files = 0
@@ -208,6 +217,7 @@ class DiskScanner:
             elif item.is_file():
                 try:
                     size = item.stat().st_size
+                    mtime = item.stat().st_mtime
                     cat = classify_file(str(item), size, drive)
                     local_cats = {c: 0 for c in all_cats}
                     local_cats[cat] = 1
@@ -220,13 +230,14 @@ class DiskScanner:
                             "size": size,
                             "size_str": get_size_str(size),
                             "suffix": item.suffix,
+                            "mtime": mtime,
+                            "mtime_str": time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)),
                         })
                     return {"files": 1, "cats": local_cats, "large": local_large}
                 except (PermissionError, OSError):
                     return None
             return None
 
-        # 多线程扫描
         with ThreadPoolExecutor(max_workers=8) as executor:
             futures = {executor.submit(scan_subdir, item): item for item in top_entries}
             for future in as_completed(futures):
@@ -241,19 +252,18 @@ class DiskScanner:
         for c in all_large:
             all_large[c].sort(key=lambda x: x["size"], reverse=True)
 
-        total_size = 0
+        # 计算每个类别的总大小（通过大文件估算）
         cats_output = {}
         for c in all_cats:
             cat_size = sum(f["size"] for f in all_large[c])
-            # 小文件的大小需要额外计算
             cats_output[c] = {
                 "count": all_cats[c],
+                "size": cat_size,
+                "size_str": get_size_str(cat_size),
                 "large_files": all_large[c]
             }
 
-        # 重新计算 total_size（需要遍历所有文件）
-        # 这里简化处理，只统计大文件大小
-        total_size = sum(f["size"] for files in all_large.values() for f in files)
+        total_size = sum(c["size"] for c in cats_output.values())
 
         return {
             "drive": str(drive_path),
@@ -262,78 +272,126 @@ class DiskScanner:
             "total_size_str": get_size_str(total_size),
             "categories": cats_output,
             "visited_count": len(self.visited),
-            "lock_contention": self.lock_count
+            "scan_time": time.strftime('%Y-%m-%d %H:%M:%S')
         }
 
 
-def main():
-    parser = argparse.ArgumentParser(description='磁盘扫描工具（只读）')
-    parser.add_argument('-p', '--path', type=str, help='扫描路径，如 C: 或 D:/Game')
-    parser.add_argument('-l', '--large-size', type=int, default=100, help='大文件阈值MB')
-    parser.add_argument('-t', '--threads', type=int, default=8, help='线程数')
-    args = parser.parse_args()
+def save_index(result: dict, index_path: Path):
+    """保存索引文件"""
+    with open(index_path, 'w', encoding='utf-8') as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
 
-    if args.path:
-        p = args.path.rstrip('\\').rstrip('/')
-        if len(p) == 2 and p[1] == ':':
-            p += '\\'
-        drives = [p]
-    else:
-        drives = get_drives()
 
-    large_bytes = args.large_size * 1024 * 1024
-    results = []
+def load_index(index_path: Path) -> dict:
+    """加载索引文件"""
+    with open(index_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-    print(f"[INFO] Scanning {len(drives)} path(s), {args.threads} threads", file=sys.stderr)
-    t0 = time.time()
 
-    for d in drives:
-        if not Path(d).exists():
-            print(f"[SKIP] {d} not found", file=sys.stderr)
-            continue
-        print(f"[SCAN] {d}...", file=sys.stderr)
-        t1 = time.time()
-        scanner = DiskScanner(large_bytes)
-        r = scanner.scan(d)
-        print(f"[DONE] {d}: {r['total_files']:,} files, {r['visited_count']:,} dirs, {time.time()-t1:.1f}s", file=sys.stderr)
-        results.append(r)
-
-    elapsed = time.time() - t0
-
-    # 汇总
-    all_cats = {}
-    total_files = 0
-    total_size = 0
-    for r in results:
-        total_files += r["total_files"]
-        total_size += r["total_size"]
-        for cat, data in r["categories"].items():
-            if cat not in all_cats:
-                all_cats[cat] = {"count": 0, "large_files": []}
-            all_cats[cat]["count"] += data["count"]
-            all_cats[cat]["large_files"].extend(data["large_files"])
-
-    # 排序大文件
-    for c in all_cats:
-        all_cats[c]["large_files"].sort(key=lambda x: x["size"], reverse=True)
-
+def output_summary(result: dict):
+    """输出摘要"""
     summary = {
-        "total_drives": len(results),
-        "total_files": total_files,
-        "total_size_str": get_size_str(total_size),
-        "scan_time": f"{elapsed:.1f}s",
-        "categories": {c: {"count": d["count"], "large_file_count": len(d["large_files"])}
-                       for c, d in sorted(all_cats.items(), key=lambda x: x[1]["count"], reverse=True)}
+        "tool": "disk-clean",
+        "status": "success",
+        "mode": "summary",
+        "drive": result["drive"],
+        "total_files": result["total_files"],
+        "total_size_str": result["total_size_str"],
+        "scan_time": result["scan_time"],
+        "categories": {}
     }
+
+    for cat, data in result["categories"].items():
+        summary["categories"][cat] = {
+            "count": data["count"],
+            "size_str": data["size_str"],
+            "large_file_count": len(data["large_files"])
+        }
+
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def output_detail(result: dict, category: str, top: int = 10):
+    """输出详情"""
+    if category not in result["categories"]:
+        print(json.dumps({"error": f"Category '{category}' not found"}, ensure_ascii=False))
+        return
+
+    cat_data = result["categories"][category]
+    files = cat_data["large_files"][:top]
 
     output = {
         "tool": "disk-clean",
         "status": "success",
-        "summary": summary,
-        "drives": results
+        "mode": "detail",
+        "drive": result["drive"],
+        "category": category,
+        "total_count": cat_data["count"],
+        "total_size_str": cat_data["size_str"],
+        "showing": len(files),
+        "files": files
     }
 
     print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(description='磁盘扫描工具（只读）')
+    parser.add_argument('-p', '--path', type=str, help='扫描路径')
+    parser.add_argument('-l', '--large-size', type=int, default=100, help='大文件阈值MB')
+    parser.add_argument('-t', '--threads', type=int, default=8, help='线程数')
+    parser.add_argument('--summary', action='store_true', help='输出摘要')
+    parser.add_argument('--detail', type=str, help='输出详情，指定类别')
+    parser.add_argument('--top', type=int, default=10, help='详情数量')
+    args = parser.parse_args()
+
+    # 确定路径
+    if args.path:
+        p = args.path.rstrip('\\').rstrip('/')
+        if len(p) == 2 and p[1] == ':':
+            p += '\\'
+        drive = p
+    else:
+        # 从索引文件推断
+        print("Error: --path is required", file=sys.stderr)
+        sys.exit(1)
+
+    # 摘要或详情模式
+    if args.summary or args.detail:
+        index_path = get_index_path(drive)
+        if not index_path.exists():
+            print(f"Error: Index not found at {index_path}", file=sys.stderr)
+            print("Please run scan first: python disk_clean.py -p D:", file=sys.stderr)
+            sys.exit(1)
+        result = load_index(index_path)
+
+        if args.summary:
+            output_summary(result)
+        elif args.detail:
+            output_detail(result, args.detail, args.top)
+        return
+
+    # 扫描模式
+    large_bytes = args.large_size * 1024 * 1024
+
+    print(f"[INFO] Scanning {drive}, {args.threads} threads", file=sys.stderr)
+    t0 = time.time()
+
+    if not Path(drive).exists():
+        print(f"[SKIP] {drive} not found", file=sys.stderr)
+        sys.exit(1)
+
+    scanner = DiskScanner(large_bytes)
+    result = scanner.scan(drive)
+    print(f"[DONE] {result['total_files']:,} files, {time.time()-t0:.1f}s", file=sys.stderr)
+
+    # 保存索引
+    index_path = get_index_path(drive)
+    save_index(result, index_path)
+    print(f"[SAVED] Index: {index_path}", file=sys.stderr)
+
+    # 输出摘要
+    output_summary(result)
 
 
 if __name__ == "__main__":
