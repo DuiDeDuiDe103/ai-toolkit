@@ -77,33 +77,79 @@ def guess_app_name(path: str) -> str:
 
 
 def classify_file(path_str: str, size: int, drive: str) -> str:
+    """
+    分类文件，大文件按类型细分
+
+    返回类别：
+    - system: 系统文件
+    - cache: 缓存文件
+    - temp: 临时文件
+    - log: 日志文件
+    - installer: 安装包
+    - archive: 压缩包
+    - large_video: 大视频文件
+    - large_game: 大游戏数据
+    - large_vm: 虚拟机文件
+    - large_model: 模型文件
+    - large_image: 镜像文件
+    - large_other: 其他大文件
+    - other: 其他文件
+    """
     p = path_str.lower().replace('/', '\\')
     suffix = Path(path_str).suffix.lower()
     parent = Path(path_str).parent.name.lower()
     d = drive.lower()
 
+    # 系统文件
     sys_prefixes = [f'{d}:\\windows', f'{d}:\\program files', f'{d}:\\programdata',
                     f'{d}:\\recovery', '/windows', '/usr', '/bin', '/lib', '/etc']
     if any(p.startswith(s) for s in sys_prefixes):
         return 'system'
 
+    # 缓存
     if 'cache' in parent or 'cached' in parent:
         return 'cache'
 
+    # 临时文件
     if suffix in {'.tmp', '.temp', '.bak', '.old', '.swp'} or 'temp' in parent or 'tmp' in parent:
         return 'temp'
 
+    # 日志
     if suffix in {'.log', '.log.1', '.log.2', '.log.3'}:
         return 'log'
 
-    if suffix in {'.exe', '.msi', '.msix', '.appx', '.dmg', '.pkg', '.deb', '.rpm', '.iso'}:
+    # 安装包
+    if suffix in {'.exe', '.msi', '.msix', '.appx', '.dmg', '.pkg', '.deb', '.rpm'}:
         return 'installer'
 
+    # 压缩包
     if suffix in {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}:
         return 'archive'
 
+    # 大文件细分
     if size >= 100 * 1024 * 1024:
-        return 'large'
+        # 视频文件
+        if suffix in {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v'}:
+            return 'large_video'
+
+        # 游戏数据
+        if suffix in {'.bin', '.pak', '.vpk', '.cpk', '.bdt', '.bhd', '.bhf', '.dat', '.arc', '.idx', '.pkg'}:
+            return 'large_game'
+
+        # 虚拟机文件
+        if suffix in {'.vmdk', '.vhdx', '.vdi', '.qcow2', '.vhd', '.hdd'}:
+            return 'large_vm'
+
+        # 模型/设计文件
+        if suffix in {'.obj', '.fbx', '.stl', '.blend', '.3ds', '.max', '.ma', '.mb', '.dwg', '.dxf'}:
+            return 'large_model'
+
+        # 镜像文件
+        if suffix in {'.img', '.iso', '.dd', '.raw', '.dmg'}:
+            return 'large_image'
+
+        # 其他大文件
+        return 'large_other'
 
     return 'other'
 
@@ -149,7 +195,9 @@ class DiskScanner:
 
         def worker(dir_path: Path, depth: int):
             local_files = 0
-            local_cats = {c: 0 for c in ['system', 'cache', 'temp', 'log', 'installer', 'archive', 'large', 'other']}
+            local_cats = {c: 0 for c in ['system', 'cache', 'temp', 'log', 'installer', 'archive',
+                                          'large_video', 'large_game', 'large_vm', 'large_model',
+                                          'large_image', 'large_other', 'other']}
             local_large = {c: [] for c in local_cats}
 
             dir_str = str(dir_path)
@@ -210,7 +258,9 @@ class DiskScanner:
 
             return {"files": local_files, "cats": local_cats, "large": local_large}
 
-        all_cats = {c: 0 for c in ['system', 'cache', 'temp', 'log', 'installer', 'archive', 'large', 'other']}
+        all_cats = {c: 0 for c in ['system', 'cache', 'temp', 'log', 'installer', 'archive',
+                                   'large_video', 'large_game', 'large_vm', 'large_model',
+                                   'large_image', 'large_other', 'other']}
         all_large = {c: [] for c in all_cats}
         total_files = 0
 
