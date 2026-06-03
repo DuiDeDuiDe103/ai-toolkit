@@ -24,6 +24,7 @@ python scripts/disk_clean.py -p D:/Game  # 扫描子目录
 ```
 
 **输出：** 摘要信息 + 保存索引文件
+**进度：** 每 10000 个文件输出一次进度
 
 ### 2. 查看摘要
 
@@ -61,6 +62,19 @@ python scripts/disk_clean.py --detail {类别} --top {数量} --short-path -p {�
 ```bash
 python scripts/disk_clean.py --detail large --top 10 --short-path -p D:
 ```
+
+### 5. 对比模式（需要至少两次扫描）
+
+```bash
+python scripts/disk_clean.py --diff -p {盘符}
+```
+
+示例：
+```bash
+python scripts/disk_clean.py --diff -p D:
+```
+
+**输出：** 显示新增/删除/变化的文件数量和大小
 
 ## 类别说明
 

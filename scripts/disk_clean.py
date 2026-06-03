@@ -5,18 +5,21 @@ disk_clean.py - 磁盘扫描工具（只读，高性能，分层输出）
 特性：
 - 多线程扫描，visited 锁防重复
 - 分层输出：摘要 + 详情
-- 按类别分组，组内按分数排序
-- 支持指定盘符或子目录
+- 对比模式：显示新增/删除/变化
+- 实时进度显示
 
 使用：
-    # 第一次：扫描并保存索引
+    # 扫描并保存索引
     python disk_clean.py -p D:
 
     # 查看摘要
     python disk_clean.py --summary -p D:
 
     # 查看详情
-    python disk_clean.py --detail large -p D: --top 10
+    python disk_clean.py --detail large --top 10 -p D:
+
+    # 对比模式
+    python disk_clean.py --diff -p D:
 """
 
 import os
@@ -79,33 +82,26 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
     parent = Path(path_str).parent.name.lower()
     d = drive.lower()
 
-    # 系统文件
     sys_prefixes = [f'{d}:\\windows', f'{d}:\\program files', f'{d}:\\programdata',
                     f'{d}:\\recovery', '/windows', '/usr', '/bin', '/lib', '/etc']
     if any(p.startswith(s) for s in sys_prefixes):
         return 'system'
 
-    # 缓存
     if 'cache' in parent or 'cached' in parent:
         return 'cache'
 
-    # 临时
     if suffix in {'.tmp', '.temp', '.bak', '.old', '.swp'} or 'temp' in parent or 'tmp' in parent:
         return 'temp'
 
-    # 日志
     if suffix in {'.log', '.log.1', '.log.2', '.log.3'}:
         return 'log'
 
-    # 安装包
     if suffix in {'.exe', '.msi', '.msix', '.appx', '.dmg', '.pkg', '.deb', '.rpm', '.iso'}:
         return 'installer'
 
-    # 压缩包
     if suffix in {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz'}:
         return 'archive'
 
-    # 大文件
     if size >= 100 * 1024 * 1024:
         return 'large'
 
@@ -113,19 +109,34 @@ def classify_file(path_str: str, size: int, drive: str) -> str:
 
 
 def get_index_path(drive: str) -> Path:
-    """获取索引文件路径"""
     drive_path = Path(drive)
     index_dir = drive_path / '.ai-toolkit'
     index_dir.mkdir(exist_ok=True)
     return index_dir / 'index.json'
 
 
-# 扫描器类
+def get_history_path(drive: str) -> Path:
+    """获取历史索引路径"""
+    drive_path = Path(drive)
+    index_dir = drive_path / '.ai-toolkit'
+    index_dir.mkdir(exist_ok=True)
+    return index_dir / 'history.json'
+
+
 class DiskScanner:
     def __init__(self, large_threshold: int):
         self.large_threshold = large_threshold
         self.visited = set()
         self.visited_lock = threading.Lock()
+        self.file_count = 0
+        self.count_lock = threading.Lock()
+
+    def update_progress(self):
+        """更新进度"""
+        with self.count_lock:
+            self.file_count += 1
+            if self.file_count % 10000 == 0:
+                print(f"  [SCAN] {self.file_count:,} files...", file=sys.stderr)
 
     def scan(self, path: str) -> dict:
         drive_path = Path(path)
@@ -172,6 +183,7 @@ class DiskScanner:
                             continue
 
                         local_files += 1
+                        self.update_progress()
                         cat = classify_file(str(item), size, drive)
                         local_cats[cat] += 1
 
@@ -221,6 +233,7 @@ class DiskScanner:
                     local_cats = {c: 0 for c in all_cats}
                     local_cats[cat] = 1
                     local_large = {c: [] for c in all_cats}
+                    self.update_progress()
                     if size >= self.large_threshold:
                         local_large[cat].append({
                             "path": str(item),
@@ -246,11 +259,9 @@ class DiskScanner:
                         all_cats[c] += result["cats"][c]
                         all_large[c].extend(result["large"][c])
 
-        # 排序大文件
         for c in all_large:
             all_large[c].sort(key=lambda x: x["size"], reverse=True)
 
-        # 计算每个类别的总大小（通过大文件估算）
         cats_output = {}
         for c in all_cats:
             cat_size = sum(f["size"] for f in all_large[c])
@@ -275,19 +286,42 @@ class DiskScanner:
 
 
 def save_index(result: dict, index_path: Path):
-    """保存索引文件"""
     with open(index_path, 'w', encoding='utf-8') as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
 
 def load_index(index_path: Path) -> dict:
-    """加载索引文件"""
     with open(index_path, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 
+def save_history(result: dict, history_path: Path):
+    """保存历史索引（用于对比）"""
+    # 读取旧历史
+    history = []
+    if history_path.exists():
+        try:
+            with open(history_path, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+        except:
+            history = []
+
+    # 添加新记录
+    history.append({
+        "scan_time": result["scan_time"],
+        "total_files": result["total_files"],
+        "total_size": result["total_size"],
+        "total_size_str": result["total_size_str"]
+    })
+
+    # 只保留最近 10 次
+    history = history[-10:]
+
+    with open(history_path, 'w', encoding='utf-8') as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+
 def output_summary(result: dict):
-    """输出摘要"""
     summary = {
         "tool": "disk-clean",
         "status": "success",
@@ -310,7 +344,6 @@ def output_summary(result: dict):
 
 
 def output_detail(result: dict, category: str, top: int = 10, short_path: bool = False):
-    """输出详情"""
     if category not in result["categories"]:
         print(json.dumps({"error": f"Category '{category}' not found"}, ensure_ascii=False))
         return
@@ -318,7 +351,6 @@ def output_detail(result: dict, category: str, top: int = 10, short_path: bool =
     cat_data = result["categories"][category]
     files = cat_data["large_files"][:top]
 
-    # 如果启用短路径，只保留文件名
     if short_path:
         files = [{k: v for k, v in f.items() if k != 'path'} for f in files]
 
@@ -337,6 +369,53 @@ def output_detail(result: dict, category: str, top: int = 10, short_path: bool =
     print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
+def output_diff(current: dict, old: dict):
+    """输出对比结果"""
+    # 对比各类别
+    diff_categories = {}
+    for cat in current["categories"]:
+        curr = current["categories"][cat]
+        old_cat = old.get("categories", {}).get(cat, {"count": 0, "size": 0})
+
+        count_diff = curr["count"] - old_cat.get("count", 0)
+        size_diff = curr["size"] - old_cat.get("size", 0)
+
+        diff_categories[cat] = {
+            "current_count": curr["count"],
+            "current_size_str": curr["size_str"],
+            "old_count": old_cat.get("count", 0),
+            "old_size_str": get_size_str(old_cat.get("size", 0)),
+            "count_diff": count_diff,
+            "size_diff": size_diff,
+            "size_diff_str": get_size_str(abs(size_diff)) if size_diff != 0 else "0.00B",
+            "trend": "增加" if count_diff > 0 else ("减少" if count_diff < 0 else "不变")
+        }
+
+    # 总体对比
+    total_diff = current["total_files"] - old.get("total_files", 0)
+    size_diff = current["total_size"] - old.get("total_size", 0)
+
+    output = {
+        "tool": "disk-clean",
+        "status": "success",
+        "mode": "diff",
+        "drive": current["drive"],
+        "current_scan_time": current["scan_time"],
+        "old_scan_time": old.get("scan_time", "unknown"),
+        "summary": {
+            "total_files": current["total_files"],
+            "total_size_str": current["total_size_str"],
+            "files_diff": total_diff,
+            "size_diff": size_diff,
+            "size_diff_str": get_size_str(abs(size_diff)) if size_diff != 0 else "0.00B",
+            "trend": "增加" if total_diff > 0 else ("减少" if total_diff < 0 else "不变")
+        },
+        "categories": diff_categories
+    }
+
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description='磁盘扫描工具（只读）')
     parser.add_argument('-p', '--path', type=str, help='扫描路径')
@@ -345,22 +424,21 @@ def main():
     parser.add_argument('--summary', action='store_true', help='输出摘要')
     parser.add_argument('--detail', type=str, help='输出详情，指定类别')
     parser.add_argument('--top', type=int, default=10, help='详情数量')
-    parser.add_argument('--short-path', action='store_true', help='只输出文件名，不输出完整路径')
+    parser.add_argument('--short-path', action='store_true', help='只输出文件名')
+    parser.add_argument('--diff', action='store_true', help='对比模式')
     args = parser.parse_args()
 
-    # 确定路径
     if args.path:
         p = args.path.rstrip('\\').rstrip('/')
         if len(p) == 2 and p[1] == ':':
             p += '\\'
         drive = p
     else:
-        # 从索引文件推断
         print("Error: --path is required", file=sys.stderr)
         sys.exit(1)
 
-    # 摘要或详情模式
-    if args.summary or args.detail:
+    # 摘要、详情或对比模式
+    if args.summary or args.detail or args.diff:
         index_path = get_index_path(drive)
         if not index_path.exists():
             print(f"Error: Index not found at {index_path}", file=sys.stderr)
@@ -372,6 +450,29 @@ def main():
             output_summary(result)
         elif args.detail:
             output_detail(result, args.detail, args.top, args.short_path)
+        elif args.diff:
+            # 加载历史索引进行对比
+            history_path = get_history_path(drive)
+            if not history_path.exists():
+                print(json.dumps({"error": "No history found. First scan needed."}, ensure_ascii=False))
+                sys.exit(1)
+            with open(history_path, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+            if len(history) < 2:
+                print(json.dumps({"error": "Need at least 2 scans for diff."}, ensure_ascii=False))
+                sys.exit(1)
+            # 使用上一次的历史作为对比基准
+            old_record = history[-2]
+            # 构造旧的 result 结构
+            old_result = {
+                "drive": result["drive"],
+                "total_files": old_record["total_files"],
+                "total_size": old_record["total_size"],
+                "total_size_str": old_record["total_size_str"],
+                "scan_time": old_record["scan_time"],
+                "categories": {}
+            }
+            output_diff(result, old_result)
         return
 
     # 扫描模式
@@ -392,6 +493,10 @@ def main():
     index_path = get_index_path(drive)
     save_index(result, index_path)
     print(f"[SAVED] Index: {index_path}", file=sys.stderr)
+
+    # 保存历史
+    history_path = get_history_path(drive)
+    save_history(result, history_path)
 
     # 输出摘要
     output_summary(result)
