@@ -315,42 +315,44 @@ class DiskScanner:
                 return None
 
             try:
-                entries = list(dir_path.iterdir())
-            except (PermissionError, OSError):
-                return None
-
-            sub_dirs = []
-            for item in entries:
-                name = item.name
-                if name in skip_dirs or name.startswith('$') or name.startswith('.'):
-                    continue
-
-                try:
-                    if item.is_dir():
-                        sub_dirs.append(item)
-                    elif item.is_file():
-                        try:
-                            size = item.stat().st_size
-                            mtime = item.stat().st_mtime
-                        except (PermissionError, OSError):
+                # 使用 os.scandir() 代替 iterdir()，性能更好
+                with os.scandir(str(dir_path)) as entries:
+                    sub_dirs = []
+                    for entry in entries:
+                        name = entry.name
+                        if name in skip_dirs or name.startswith('$') or name.startswith('.'):
                             continue
 
-                        local_files += 1
-                        cat = classify_file(str(item), size, drive)
-                        local_cats[cat] += 1
+                        try:
+                            if entry.is_dir():
+                                sub_dirs.append(Path(entry.path))
+                            elif entry.is_file():
+                                try:
+                                    # 使用 entry.stat()，比 os.stat() 快
+                                    stat_info = entry.stat()
+                                    size = stat_info.st_size
+                                    mtime = stat_info.st_mtime
+                                except (PermissionError, OSError):
+                                    continue
 
-                        if size >= get_large_threshold(cat):
-                            local_large[cat].append({
-                                "path": str(item),
-                                "name": name,
-                                "app": guess_app_name(str(item)),
-                                "size": size,
-                                "size_str": get_size_str(size),
-                                "suffix": item.suffix,
-                                "mtime": time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)),
-                            })
-                except (PermissionError, OSError):
-                    continue
+                                local_files += 1
+                                cat = classify_file(entry.path, size, drive)
+                                local_cats[cat] += 1
+
+                                if size >= get_large_threshold(cat):
+                                    local_large[cat].append({
+                                        "path": entry.path,
+                                        "name": name,
+                                        "app": guess_app_name(entry.path),
+                                        "size": size,
+                                        "size_str": get_size_str(size),
+                                        "suffix": Path(name).suffix,
+                                        "mtime": time.strftime('%Y-%m-%d %H:%M', time.localtime(mtime)),
+                                    })
+                        except (PermissionError, OSError):
+                            continue
+            except (PermissionError, OSError):
+                return None
 
             for sub in sub_dirs:
                 result = worker(sub, depth + 1)
